@@ -160,13 +160,18 @@ impl Client {
                     .lossy_utf8(true)
                     .read_to_string()
                     .unwrap_or_default();
-                let hint = if status == 401 || status == 403 {
+                let hint = if status != 401 && status != 403 {
+                    String::new()
+                } else if let Some(cred) = self.creds.get(&r.registry) {
                     format!(
-                        " (credentials for {}: `arsonist auth login {}`)",
-                        r.registry, r.registry
+                        " ({}'s credentials for {} cannot read {})",
+                        cred.username, r.registry, r.repository
                     )
                 } else {
-                    String::new()
+                    format!(
+                        " (no credentials for {}: `arsonist auth login {}`)",
+                        r.registry, r.registry
+                    )
                 };
                 bail!("GET {url}: HTTP {status}{hint}: {}", body.trim());
             }
