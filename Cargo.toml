@@ -1,0 +1,31 @@
+[package]
+name = "arsonist"
+version = "0.1.0"
+edition = "2024"
+description = "Buildkite agents in single-use Firecracker microVMs, booted from OCI images"
+repository = "https://github.com/necessary-nu/arsonist"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+clap = { version = "4.6.8", features = ["derive"] }
+flate2 = "1.1.11"
+indexmap = { version = "2.14.2", features = ["serde"] }
+libc = "0.2.191"
+nix = { version = "0.32.0", features = ["mount", "reboot", "signal", "process", "fs", "hostname", "resource", "poll", "user"] }
+ruzstd = "0.9.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tar = "0.4.46"
+toml = "1.2.1"
+# No gzip: a Content-Encoding header must never get a layer decompressed
+# behind the digest check's back.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+
+[profile.release]
+# The binary is also the guests' init, copied into every boot's initramfs.
+lto = true
+codegen-units = 1
+strip = true

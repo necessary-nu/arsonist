@@ -1,0 +1,22 @@
+#!/bin/sh
+say() { echo "fake-agent: $*"; }
+say "argv: $*"
+say "name=$BUILDKITE_AGENT_NAME tags=$BUILDKITE_AGENT_TAGS token=$BUILDKITE_AGENT_TOKEN image=$IMAGE_VAR pool=$POOL_VAR"
+say "pid $$ ppid $PPID uid $(id -u) home $HOME"
+say "hostname $(hostname); resolv.conf: $(tr '\n' ' ' </etc/resolv.conf)"
+say "vm.json: $(tr -d '\n ' </run/arsonist/vm.json)"
+say "hooks: $(ls /buildkite/hooks | tr '\n' ' ')- $(cat /buildkite/hooks/environment)"
+say "previous marker: $(cat /buildkite/builds/marker 2>/dev/null || echo none)"
+echo "run-$$-$(date +%s)" >/buildkite/builds/marker
+say "root fs: $(awk '$2=="/"{print $3}' /proc/mounts); /etc writable: $(touch /etc/written && echo yes)"
+say "mounts: $(awk '$2 ~ /^\/(buildkite|run\/arsonist|sys\/fs\/cgroup|dev\/pts)/ {print $2"("$3")"}' /proc/mounts | tr '\n' ' ')"
+say "nofile $(ulimit -n); cgroup controllers: $(cat /sys/fs/cgroup/cgroup.subtree_control)"
+say "eth0: $(ip -4 -o addr show eth0 | awk '{print $4}'); route: $(ip route | head -1)"
+sleep 600 &
+say "left an orphan behind: $!"
+if [ "$FAKE_AGENT_WAIT" = 1 ]; then
+  trap 'say "got SIGTERM, finishing the job"; exit 0' TERM
+  say "waiting for SIGTERM"
+  while :; do sleep 1; done
+fi
+say "job done"

@@ -1,0 +1,94 @@
+# /etc/arsonist/config.toml: what one host runs. After editing, run
+# `arsonist install` so the systemd units match.
+#
+# Every key outside [pools] has the default shown.
+
+# Images, kernels, cache disks and jails. One filesystem: VMs boot from hard
+# links into their jails.
+# state_dir = "/var/lib/arsonist"
+
+# Slot n (counting across pools, in file order) runs as uid/gid uid_base + n.
+# uid_base = 900000
+
+[buildkite]
+# Read at every boot.
+# token_file = "/etc/arsonist/agent-token"
+# Added to `buildkite-agent start --disconnect-after-job`.
+# args = ["--tags-from-host"]
+
+[network]
+# Each slot takes a /30 of this: host .1, guest .2.
+# subnet = "172.30.0.0/16"
+# Unset: the host's own upstream resolvers.
+# dns = ["192.168.1.1"]
+
+[kernel]
+# image = "ghcr.io/necessary-nu/arsonist-kernel:latest"
+# Appended to the kernel command line. Drop "quiet" to see the boot.
+# args = "quiet"
+
+[images]
+# mkfs.erofs -z: lz4, lz4hc, lzma, or "none".
+# compression = "lz4"
+# Registry credentials, as Docker's config.json; `arsonist auth login`
+# writes it.
+# auth_file = "/etc/arsonist/auth.json"
+
+[cache]
+# Guest paths kept on each slot's cache disk from one job to the next.
+# These are the paths the divvun-actions images expect.
+paths = [
+  "/buildkite/builds",
+  "/buildkite/plugins",
+  "/var/cache/buildkite",
+  "/var/lib/docker",
+  "/var/lib/containerd",
+  "/root/.cache",
+  "/root/.cargo/registry",
+  "/root/.cargo/git",
+  "/root/.gradle",
+]
+# Start a slot's cache disk over when its pool's image changes, and when it
+# is fuller than reset_usage at boot.
+# reset_on_image_change = true
+# reset_usage = 0.9
+
+# Host files and directories copied into every guest's memory, read at
+# every boot.
+[[files]]
+host = "/var/lib/buildkite/hooks"
+guest = "/buildkite/hooks"
+
+[[files]]
+host = "/var/lib/buildkite-secrets"
+guest = "/buildkite-secrets"
+
+# For `docker push` from jobs.
+# [[files]]
+# host = "/etc/arsonist/docker-config.json"
+# guest = "/root/.docker/config.json"
+
+# One table per kind of agent. Slots are <pool>-1 .. <pool>-<count>. Add new
+# pools at the end: inserting one renumbers the slots after it.
+#
+# vcpus defaults to the host's CPU count (at most 32, made even). vCPUs are
+# threads, so slots share the host's cores the way containers do. memory is
+# allocated as the guest touches it and returned when the VM exits.
+
+[pools.linux]
+image = "ghcr.io/divvun/divvun-actions:ubuntu-latest"
+count = 4
+memory = "24G"
+scratch = "64G"
+cache = "300G"
+tags = ["queue=linux"]
+# vcpus = 16
+# io_engine = "Sync"   # or "Async" (io_uring, a developer preview in Firecracker)
+# env = { BUILDKITE_GIT_CLONE_FLAGS = "-v" }
+
+# [pools.linux-large]
+# image = "ghcr.io/divvun/divvun-actions:ubuntu-latest"
+# count = 2
+# memory = "32G"
+# cache = "500G"
+# tags = ["queue=linux", "size=large"]
