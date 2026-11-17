@@ -13,7 +13,7 @@ use nix::sys::signal::Signal;
 use crate::cmd::Cmd;
 use crate::config::{Config, IoEngine, Slot};
 use crate::images::{self, KERNEL_FILE, ROOTFS_FILE, Version};
-use crate::net;
+use crate::net::{self, SlotAddress};
 use crate::protocol::{CACHE_LABEL, GuestConfig, SCRATCH_LABEL, VmInfo};
 use crate::signals::{self, Signals};
 use crate::vm::{self, jail};
@@ -157,6 +157,7 @@ fn host_name() -> String {
 }
 
 struct Boot {
+    addr: SlotAddress,
     jail: JailPaths,
     args: Vec<String>,
 }
@@ -282,6 +283,8 @@ fn prepare_boot(
         "--cgroup-version",
         "2",
         "--",
+        "--level",
+        "Warning",
         "--config-file",
         &format!("/{}", jail::VM_CONFIG),
         "--api-sock",
@@ -293,7 +296,7 @@ fn prepare_boot(
         "booting {} as {hostname}: {}, kernel {}",
         slot.name, image.meta.image, kernel.meta.image
     );
-    Ok(Boot { jail, args })
+    Ok(Boot { addr, jail, args })
 }
 
 /// Whether the arsonist binary this runs from was replaced on disk.
@@ -320,81 +323,95 @@ impl ExeWatch {
 
 /// Boot the slot's VM over and over, one job each, until told to stop. The
 /// first SIGTERM lets the running job finish; a second kills the VM.
-pub fn run(config: &Config, slot: &Slot) -> Result<()> {
+///
+/// The config is read again before every boot, so an edit applies from the
+/// slot's next job, as a new image does.
+pub fn run(config_path: &Path, slot_name: &str) -> Result<()> {
     let init = fs::read("/proc/self/exe").context("reading this binary to boot guests with")?;
     elf::check_static(&init)?;
     let exe = ExeWatch::new()?;
     let signals = Signals::block(&[Signal::SIGTERM, Signal::SIGINT, Signal::SIGCHLD])?;
-    let jail = jail_paths(config, slot);
-    let addr = config.network.subnet.slot(slot.index)?;
+    let mut config = Config::load(config_path)?;
 
     let mut stopping = false;
     let mut backoff = BACKOFF_MIN;
-    let result = (|| -> Result<()> {
-        loop {
-            if stopping {
-                return Ok(());
-            }
-            if exe.replaced() {
+    let mut unconfigured_logged = false;
+    loop {
+        if stopping {
+            break;
+        }
+        if exe.replaced() {
+            info!("{slot_name}: arsonist was upgraded; restarting into the new one");
+            break;
+        }
+        match Config::load(config_path) {
+            Ok(c) => config = c,
+            Err(e) => error!("{slot_name}: {e:#}; booting with the config as it was read before"),
+        }
+        let Some(slot) = config.slots.iter().find(|s| s.name == slot_name).cloned() else {
+            if !unconfigured_logged {
                 info!(
-                    "{}: arsonist was upgraded; restarting into the new one",
-                    slot.name
+                    "{slot_name}: not in {} any more; waiting for it to come back, or for `arsonist install` to remove it",
+                    config_path.display()
                 );
-                return Ok(());
+                unconfigured_logged = true;
             }
-            let Some((kernel, image)) = wait_for_versions(config, slot, &signals, &mut stopping)?
-            else {
-                return Ok(());
-            };
-            let boot = match prepare_boot(config, slot, &kernel, &image, &init) {
-                Ok(boot) => boot,
-                Err(e) => {
-                    error!(
-                        "{}: could not prepare the VM: {e:#}; trying again in {}s",
-                        slot.name,
-                        backoff.as_secs()
-                    );
-                    sleep(&signals, backoff, &mut stopping)?;
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
-                    continue;
-                }
-            };
-            while let Some(s) = signals.wait(Some(Duration::ZERO))? {
-                if matches!(s, Signal::SIGTERM | Signal::SIGINT) {
-                    stopping = true;
-                }
-            }
-            if stopping {
-                let _ = fs::remove_dir_all(&boot.jail.id_dir);
-                return Ok(());
-            }
+            sleep(&signals, WAIT_FOR_IMAGES, &mut stopping)?;
+            continue;
+        };
+        unconfigured_logged = false;
 
+        let Some((kernel, image)) = wait_for_versions(&config, &slot, &signals, &mut stopping)?
+        else {
+            break;
+        };
+        let boot = match prepare_boot(&config, &slot, &kernel, &image, &init) {
+            Ok(boot) => boot,
+            Err(e) => {
+                error!(
+                    "{slot_name}: could not prepare the VM: {e:#}; trying again in {}s",
+                    backoff.as_secs()
+                );
+                let _ = fs::remove_dir_all(&jail_paths(&config, &slot).id_dir);
+                sleep(&signals, backoff, &mut stopping)?;
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        };
+        while let Some(s) = signals.wait(Some(Duration::ZERO))? {
+            if matches!(s, Signal::SIGTERM | Signal::SIGINT) {
+                stopping = true;
+            }
+        }
+        let status = if stopping {
+            None
+        } else {
             let child = signals::unblocked(&mut Command::new(&config.firecracker.jailer))
                 .args(&boot.args)
                 .stdin(Stdio::null())
                 .spawn()
                 .with_context(|| format!("starting {}", config.firecracker.jailer.display()))?;
-            let status = supervise(child, &boot, &signals, &mut stopping, &slot.name)?;
-            let _ = fs::remove_dir_all(&boot.jail.id_dir);
-            if status {
-                backoff = BACKOFF_MIN;
-            } else {
+            Some(supervise(child, &boot, &signals, &mut stopping, slot_name)?)
+        };
+        let _ = fs::remove_dir_all(&boot.jail.id_dir);
+        if let Err(e) = net::tap_down(&boot.addr) {
+            warn!("{slot_name}: {e:#}");
+        }
+        match status {
+            Some(true) => backoff = BACKOFF_MIN,
+            Some(false) => {
                 error!(
-                    "{}: Firecracker failed; trying again in {}s",
-                    slot.name,
+                    "{slot_name}: Firecracker failed; trying again in {}s",
                     backoff.as_secs()
                 );
                 sleep(&signals, backoff, &mut stopping)?;
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
+            None => {}
         }
-    })();
-    let _ = fs::remove_dir_all(&jail.id_dir);
-    if let Err(e) = net::tap_down(&addr) {
-        warn!("{}: {e:#}", slot.name);
     }
-    info!("{}: stopped", slot.name);
-    result
+    info!("{slot_name}: stopped");
+    Ok(())
 }
 
 /// Wait for Firecracker to exit, relaying stop requests to the guest.

@@ -52,11 +52,13 @@ pub fn boot_args(addr: &SlotAddress, hostname: &str, dns: &[Ipv4Addr], extra: &s
         "console=ttyS0",
         "reboot=k",
         "panic=1",
-        // Firecracker's advice: skip probing the i8042, which SendCtrlAltDel
-        // still works through.
+        "pci=off",
+        // SendCtrlAltDel arrives through the i8042, which the guest must find
+        // from its ACPI description: probed for by hand (i8042.nopnp), its
+        // interrupt is never mapped. These skip what Firecracker's minimal
+        // controller cannot answer.
         "i8042.noaux",
         "i8042.nomux",
-        "i8042.nopnp",
         "i8042.dumbkbd",
         &ip,
         extra,
@@ -161,6 +163,10 @@ tags = ["queue=linux"]
             "ip=172.30.0.6::172.30.0.5:255.255.255.252:build01-linux-2:eth0:off:192.168.1.1:1.1.1.1"
         ));
         assert!(args.starts_with("console=ttyS0 reboot=k panic=1 "));
+        assert!(
+            !args.contains("i8042.nopnp"),
+            "the i8042 is found through ACPI"
+        );
         assert!(args.ends_with(" quiet"));
         assert!(!args.contains("init="), "the initramfs's /init is the init");
     }

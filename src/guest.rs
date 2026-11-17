@@ -374,6 +374,8 @@ struct Children {
     agent: Option<Pid>,
     agent_status: Option<WaitStatus>,
     dockerd: Option<Pid>,
+    /// Set once init has told dockerd to stop, so its exit is expected.
+    dockerd_stopping: bool,
     none_left: bool,
 }
 
@@ -393,7 +395,9 @@ impl Children {
                         self.agent = None;
                         self.agent_status = Some(status);
                     } else if pid.is_some() && pid == self.dockerd {
-                        warn!("dockerd exited: {status:?}");
+                        if !self.dockerd_stopping {
+                            warn!("dockerd exited: {status:?}");
+                        }
                         self.dockerd = None;
                     }
                 }
@@ -475,6 +479,7 @@ fn start_dockerd(
 /// Stop everything left, so the cache disk can be put away cleanly.
 fn wind_down(signals: &Signals, children: &mut Children, stopping: &mut bool) -> Result<()> {
     if let Some(pid) = children.dockerd {
+        children.dockerd_stopping = true;
         let _ = kill(pid, Signal::SIGTERM);
         wait_until(signals, children, stopping, DOCKERD_STOP_WAIT, |c| {
             c.dockerd.is_none()

@@ -108,8 +108,9 @@ sudo arsonist install        # systemd units, one arsonist@<slot> per slot
 sudo arsonist status
 ```
 
-`install` is idempotent. Run it again after editing the config: it enables
-new slots, and stops removed ones once their jobs finish.
+Slots read the config again before every boot, so an edit applies from
+each slot's next job. Run `install` again when slots are added or removed:
+it enables new ones, and stops removed ones once their jobs finish.
 
 If Docker also runs on the host, its FORWARD policy is handled through the
 `DOCKER-USER` chain. Any other default-drop FORWARD policy (ufw) has to

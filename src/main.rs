@@ -81,13 +81,26 @@ fn auth_file(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|_| Images::default().auth_file)
 }
 
+/// For commands whose output is piped into `head` and the like: end quietly
+/// when the reader goes away, as Unix tools do, instead of panicking.
+fn die_on_broken_pipe() {
+    // SAFETY: setting a signal disposition before any threads exist.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Setup => host::setup(&cli.config),
         Command::Install => systemd::install(&Config::load(&cli.config)?),
-        Command::Status => host::status(&Config::load(&cli.config)?),
+        Command::Status => {
+            die_on_broken_pipe();
+            host::status(&Config::load(&cli.config)?)
+        }
         Command::Images(ImagesCommand::Update) => images::update_all(&Config::load(&cli.config)?),
         Command::Images(ImagesCommand::Export { image, output }) => {
+            die_on_broken_pipe();
             let auth = auth_file(&cli.config);
             match output {
                 Some(path) => images::export(&auth, &image, BufWriter::new(File::create(path)?)),
@@ -99,11 +112,7 @@ fn run(cli: Cli) -> Result<()> {
             net::network_up(network.subnet, network.uplink.as_deref())
         }
         Command::Network(NetworkCommand::Down) => net::network_down(),
-        Command::Slot(SlotCommand::Run { slot }) => {
-            let config = Config::load(&cli.config)?;
-            let slot = config.find_slot(&slot)?.clone();
-            slot::run(&config, &slot)
-        }
+        Command::Slot(SlotCommand::Run { slot }) => slot::run(&cli.config, &slot),
         Command::Slot(SlotCommand::ResetCache { slot }) => {
             let config = Config::load(&cli.config)?;
             slot::reset_cache(&config, config.find_slot(&slot)?)
