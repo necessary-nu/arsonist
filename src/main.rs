@@ -95,7 +95,8 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Network(NetworkCommand::Up) => {
-            net::network_up(Config::load(&cli.config)?.network.subnet)
+            let network = Config::load(&cli.config)?.network;
+            net::network_up(network.subnet, network.uplink.as_deref())
         }
         Command::Network(NetworkCommand::Down) => net::network_down(),
         Command::Slot(SlotCommand::Run { slot }) => {

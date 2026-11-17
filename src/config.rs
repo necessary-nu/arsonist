@@ -95,6 +95,9 @@ pub struct Network {
     pub subnet: Subnet,
     /// Empty: the host's own upstream resolvers, read at every boot.
     pub dns: Vec<Ipv4Addr>,
+    /// The interface guests reach the internet through. Unset: the default
+    /// route's, when `network up` runs.
+    pub uplink: Option<String>,
 }
 
 impl Default for Network {
@@ -102,6 +105,7 @@ impl Default for Network {
         Network {
             subnet: "172.30.0.0/16".parse().expect("a valid subnet"),
             dns: vec![],
+            uplink: None,
         }
     }
 }
