@@ -42,7 +42,7 @@ boot() {
   "dns": ["10.0.2.3"],
   "env": [["IMAGE_VAR", "overridden-by-pool"], ["POOL_VAR", "from-the-pool"], ["FAKE_AGENT_WAIT", "$wait"],
           ["BUILDKITE_AGENT_TOKEN", "not-a-token"], ["BUILDKITE_AGENT_NAME", "qemu-test-1"], ["BUILDKITE_AGENT_TAGS", "queue=test"]],
-  "agent": ["buildkite-agent", "start", "--disconnect-after-job"],
+  "agent": ["buildkite-agent", "start", "--disconnect-after-job", "--tags-from-host", "--no-pty"],
   "cache_paths": ["/buildkite/builds", "/var/lib/docker"],
   "files": ["/buildkite/hooks"],
   "discard": true,

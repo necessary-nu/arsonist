@@ -49,7 +49,10 @@ ext4 labels `arsonist-scratch` and `arsonist-cache`), puts the image under an
 overlay whose upper layer is the scratch disk, and switches into it. It
 mounts what a container runtime would, binds each `cache.paths` entry from
 the cache disk, binds the shared files, starts `dockerd` if the image has
-it, and runs `buildkite-agent start --disconnect-after-job`. When the agent
+it, and runs `buildkite-agent start --disconnect-after-job`, by default with
+`--no-pty`: jobs get no terminal, so a tool that would prompt (ssh asking
+about a host key, git for a password) fails instead of waiting for an
+answer. When the agent
 exits, init stops everything, puts the cache disk away cleanly and resets
 the VM. Firecracker exits and the slot boots the next VM.
 

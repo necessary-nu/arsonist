@@ -76,7 +76,11 @@ impl Default for Firecracker {
 pub struct Buildkite {
     /// Read at every boot, so a new token needs no restart.
     pub token_file: PathBuf,
-    /// Added to `buildkite-agent start --disconnect-after-job`.
+    /// Added to `buildkite-agent start --disconnect-after-job`. The default
+    /// runs jobs without a terminal: in a VM nobody can type into it, so a
+    /// prompt (ssh's host key question, git asking for a password) would only
+    /// hold the slot until the job times out, where without one the tool
+    /// fails at once.
     pub args: Vec<String>,
 }
 
@@ -84,7 +88,7 @@ impl Default for Buildkite {
     fn default() -> Self {
         Buildkite {
             token_file: PathBuf::from("/etc/arsonist/agent-token"),
-            args: vec!["--tags-from-host".into()],
+            args: vec!["--tags-from-host".into(), "--no-pty".into()],
         }
     }
 }
@@ -477,7 +481,7 @@ tags = ["queue=linux", "size=large"]
         assert_eq!(c.pools["linux-large"].cache, Size(500 << 30));
         assert_eq!(c.state_dir, Path::new("/var/lib/arsonist"));
         assert_eq!(c.kernel.image, KERNEL_IMAGE);
-        assert_eq!(c.buildkite.args, ["--tags-from-host"]);
+        assert_eq!(c.buildkite.args, ["--tags-from-host", "--no-pty"]);
         assert!(c.cache.reset_on_image_change);
     }
 

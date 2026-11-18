@@ -3,6 +3,7 @@ say() { echo "fake-agent: $*"; }
 say "argv: $*"
 say "name=$BUILDKITE_AGENT_NAME tags=$BUILDKITE_AGENT_TAGS token=$BUILDKITE_AGENT_TOKEN image=$IMAGE_VAR pool=$POOL_VAR"
 say "pid $$ ppid $PPID uid $(id -u) home $HOME"
+say "controlling terminal: $(if (: </dev/tty) 2>/dev/null; then echo yes; else echo none; fi)"
 say "hostname $(hostname); resolv.conf: $(tr '\n' ' ' </etc/resolv.conf)"
 say "vm.json: $(tr -d '\n ' </run/arsonist/vm.json)"
 say "hooks: $(ls /buildkite/hooks | tr '\n' ' ')- $(cat /buildkite/hooks/environment)"

@@ -13,8 +13,10 @@
 [buildkite]
 # Read at every boot.
 # token_file = "/etc/arsonist/agent-token"
-# Added to `buildkite-agent start --disconnect-after-job`.
-# args = ["--tags-from-host"]
+# Added to `buildkite-agent start --disconnect-after-job`. Without --no-pty a
+# job gets a terminal nobody can type into, and a prompt holds the slot until
+# the job times out.
+# args = ["--tags-from-host", "--no-pty"]
 
 [network]
 # Each slot takes a /30 of this: host .1, guest .2.
