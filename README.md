@@ -71,6 +71,14 @@ or open connections to the host.
 per slot (`uid_base + n`), inside the slot unit's cgroup. A VM's memory and
 CPUs are bounded by its size.
 
+**The ssh agent**: with `[ssh_agent]` configured, jobs find an agent at
+`SSH_AUTH_SOCK` whose one key is an Ed25519 key in OpenBao's transit
+engine. Guest init bridges that socket over vsock to the slot on the host,
+which answers as [bao-ssh-agent](crates/bao-ssh-agent) and has OpenBao sign.
+Jobs can use the key for as long as their VM lives, but cannot take it
+away: it is not in the VM, and nor is the AppRole the host logs in to
+OpenBao with. Every signature is logged under the slot that asked for it.
+
 ## Stopping and rolling out
 
 There is nothing to drain. Each slot boots its next VM from whatever
@@ -111,6 +119,17 @@ sudo arsonist install        # systemd units, one arsonist@<slot> per slot
 sudo arsonist status
 ```
 
+For the ssh agent, make the transit key and an AppRole that may only use
+it, as [bao-ssh-agent's README](crates/bao-ssh-agent/README.md#setting-up-openbao)
+shows. Then give the host the AppRole, and register the key with the git
+host:
+
+```sh
+echo '{"role_id": "…", "secret_id": "…"}' | sudo install -m 600 /dev/stdin /etc/arsonist/openbao-approle.json
+sudo arsonist ssh-agent public-key   # add this to the git host, e.g. a bot account's SSH keys
+sudo arsonist ssh-agent serve /tmp/a.sock & SSH_AUTH_SOCK=/tmp/a.sock ssh -T git@github.com
+```
+
 Slots read the config again before every boot, so an edit applies from
 each slot's next job. Run `install` again when slots are added or removed:
 it enables new ones, and stops removed ones once their jobs finish.
@@ -146,16 +165,23 @@ arsonist builds and runs on Linux only. On a Mac, test in a container and
 cross-build:
 
 ```sh
-docker run --rm -v "$PWD:/src" -w /src rust:1 cargo test
+docker run --rm -v "$PWD:/src" -w /src rust:1 cargo test --workspace
 cargo zigbuild --release --target x86_64-unknown-linux-musl
 docker buildx build --platform linux/amd64 --output type=local,dest=out kernel/
 scripts/qemu-boot.sh out/vmlinux target/x86_64-unknown-linux-musl/release/arsonist
+crates/bao-ssh-agent/scripts/e2e.sh
 ```
 
 `scripts/qemu-boot.sh` boots a guest the way a slot does, but under QEMU
 with no KVM needed, against a stand-in image whose `buildkite-agent` reports
 what it finds. It boots twice on one cache disk. The first job runs to the
-end; the second is stopped with Ctrl-Alt-Del and must still finish.
+end; the second is stopped with Ctrl-Alt-Del and must still finish. Its
+guest also reaches an ssh agent on the host over vsock, which needs
+`/dev/vhost-vsock` where Docker runs.
+
+`crates/bao-ssh-agent/scripts/e2e.sh` runs the agent against OpenBao's dev
+server and logs in to sshd with it, before and after OpenBao revokes the
+agent's token.
 
 The binary must be static: the initramfs holds nothing else, so the guest
 has no libc to load. `arsonist slot run` refuses a dynamically linked build.

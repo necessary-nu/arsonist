@@ -1,13 +1,16 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufWriter};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use arsonist::config::{Config, DEFAULT_CONFIG_PATH, Images};
-use arsonist::{error, guest, host, images, log, net, slot, systemd};
+use arsonist::{error, guest, host, images, info, log, net, slot, systemd};
 
 /// Buildkite agents in single-use Firecracker microVMs, booted from OCI
 /// images.
@@ -36,6 +39,8 @@ enum Command {
     Slot(SlotCommand),
     #[command(subcommand)]
     Auth(AuthCommand),
+    #[command(subcommand)]
+    SshAgent(SshAgentCommand),
 }
 
 #[derive(Subcommand)]
@@ -73,6 +78,22 @@ enum AuthCommand {
         #[arg(short, long)]
         username: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SshAgentCommand {
+    /// The transit key as an authorized_keys line, to register with the git
+    /// host.
+    PublicKey,
+    /// Answer as the guests' agent does, on a unix socket, to try it from
+    /// the host: `SSH_AUTH_SOCK=<socket> ssh -T git@github.com`.
+    Serve { socket: PathBuf },
+}
+
+fn ssh_agent_config(config_path: &Path) -> Result<arsonist::config::SshAgent> {
+    Config::load(config_path)?
+        .ssh_agent
+        .with_context(|| format!("no [ssh_agent] in {}", config_path.display()))
 }
 
 fn auth_file(config_path: &Path) -> PathBuf {
@@ -119,6 +140,25 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Auth(AuthCommand::Login { registry, username }) => {
             host::login(&auth_file(&cli.config), &registry, &username)
+        }
+        Command::SshAgent(SshAgentCommand::PublicKey) => {
+            let transit = ssh_agent_config(&cli.config)?.transit()?;
+            println!("{}", bao_ssh_agent::public_key(&transit)?);
+            Ok(())
+        }
+        Command::SshAgent(SshAgentCommand::Serve { socket }) => {
+            let transit = Arc::new(ssh_agent_config(&cli.config)?.transit()?);
+            let background = bao_ssh_agent::Background::new()?;
+            let _ = fs::remove_file(&socket);
+            let listener = UnixListener::bind(&socket)
+                .with_context(|| format!("listening at {}", socket.display()))?;
+            fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+            let agent = bao_ssh_agent::Agent::new(transit, "ssh-agent");
+            let _serving = background.serve(listener, agent)?;
+            info!("ssh agent at {}", socket.display());
+            loop {
+                std::thread::park();
+            }
         }
     }
 }

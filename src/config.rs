@@ -42,6 +42,9 @@ pub struct Config {
     pub cache: Cache,
     #[serde(default)]
     pub files: Vec<SharedFile>,
+    /// Unset: guests get no ssh agent.
+    #[serde(default)]
+    pub ssh_agent: Option<SshAgent>,
     pub pools: IndexMap<String, Pool>,
     #[serde(skip)]
     pub slots: Vec<Slot>,
@@ -167,6 +170,53 @@ impl Default for Cache {
             reset_usage: 0.9,
         }
     }
+}
+
+/// The ssh agent each guest gets. Its one key is an Ed25519 key in
+/// OpenBao's transit engine, and the host signs with it for the guest, so
+/// neither the key nor any OpenBao credential is ever in a VM.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshAgent {
+    /// Such as `https://vault.example`.
+    pub openbao: String,
+    /// The transit key's name.
+    pub key: String,
+    #[serde(default = "default_transit_mount")]
+    pub transit_mount: String,
+    #[serde(default = "default_approle_mount")]
+    pub approle_mount: String,
+    /// `{"role_id": "…", "secret_id": "…"}`, read at every login, so a new
+    /// secret id needs no restart.
+    #[serde(default = "default_approle_file")]
+    pub approle_file: PathBuf,
+}
+
+impl SshAgent {
+    pub fn transit(&self) -> Result<bao_ssh_agent::Transit> {
+        let login = bao_ssh_agent::Login::AppRole {
+            mount: self.approle_mount.clone(),
+            file: self.approle_file.clone(),
+        };
+        let openbao = bao_ssh_agent::OpenBao::new(&self.openbao, login)?;
+        Ok(bao_ssh_agent::Transit::new(
+            openbao,
+            &self.transit_mount,
+            &self.key,
+        ))
+    }
+}
+
+fn default_transit_mount() -> String {
+    "transit".into()
+}
+
+fn default_approle_mount() -> String {
+    "approle".into()
+}
+
+fn default_approle_file() -> PathBuf {
+    PathBuf::from("/etc/arsonist/openbao-approle.json")
 }
 
 /// A host file or directory copied into every guest's memory and bound at
@@ -355,6 +405,12 @@ impl Config {
         for f in &self.files {
             check_guest_path(&f.guest, "files.guest")?;
         }
+        if let Some(agent) = &self.ssh_agent {
+            bao_ssh_agent::openbao::check_address(&agent.openbao).context("ssh_agent.openbao")?;
+            if agent.key.is_empty() {
+                bail!("ssh_agent.key: the transit key's name");
+            }
+        }
 
         for (name, pool) in self.pools.iter_mut() {
             let field = format!("pools.{name}");
@@ -529,5 +585,20 @@ tags = ["queue=linux", "size=large"]
         assert!(format!("{:#}", parse(&relative).unwrap_err()).contains("absolute"));
         let small_subnet = format!("[network]\nsubnet = \"10.0.0.0/29\"\n{MINIMAL}");
         assert!(format!("{:#}", parse(&small_subnet).unwrap_err()).contains("room for 2 slots"));
+    }
+
+    #[test]
+    fn the_ssh_agent_is_off_until_configured() {
+        assert!(parse(MINIMAL).unwrap().ssh_agent.is_none());
+        let on = format!(
+            "[ssh_agent]\nopenbao = \"https://vault.example\"\nkey = \"ci-ssh\"\n{MINIMAL}"
+        );
+        let agent = parse(&on).unwrap().ssh_agent.unwrap();
+        assert_eq!(agent.transit_mount, "transit");
+        assert_eq!(agent.approle_mount, "approle");
+        assert_eq!(
+            agent.approle_file,
+            Path::new("/etc/arsonist/openbao-approle.json")
+        );
     }
 }

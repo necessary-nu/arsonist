@@ -16,7 +16,18 @@ pub mod jail {
     pub const CACHE: &str = "cache.ext4";
     pub const VM_CONFIG: &str = "vm.json";
     pub const API_SOCKET: &str = "firecracker.socket";
+    pub const VSOCK: &str = "v.sock";
+
+    /// Where Firecracker connects a guest's connections to vsock port
+    /// `port`: someone on the host has to be listening there.
+    pub fn vsock_listener(port: u32) -> String {
+        format!("{VSOCK}_{port}")
+    }
 }
+
+/// The guest's vsock address; the device is the VM's own, so every guest
+/// can have the same one.
+const GUEST_CID: u32 = 3;
 
 const HOSTNAME_MAX: usize = 63;
 
@@ -69,7 +80,8 @@ pub fn boot_args(addr: &SlotAddress, hostname: &str, dns: &[Ipv4Addr], extra: &s
     .join(" ")
 }
 
-pub fn firecracker_config(pool: &Pool, addr: &SlotAddress, boot_args: &str) -> Value {
+/// `vsock`: give the guest a vsock device, for the host's ssh agent.
+pub fn firecracker_config(pool: &Pool, addr: &SlotAddress, boot_args: &str, vsock: bool) -> Value {
     let writable = |id: &str, path: &str, cache_type: &str| {
         let mut drive = json!({
             "drive_id": id,
@@ -85,7 +97,7 @@ pub fn firecracker_config(pool: &Pool, addr: &SlotAddress, boot_args: &str) -> V
         }
         drive
     };
-    json!({
+    let mut config = json!({
         "boot-source": {
             "kernel_image_path": format!("/{}", jail::KERNEL),
             "initrd_path": format!("/{}", jail::INITRD),
@@ -113,7 +125,14 @@ pub fn firecracker_config(pool: &Pool, addr: &SlotAddress, boot_args: &str) -> V
             "guest_mac": addr.guest_mac,
         }],
         "entropy": {},
-    })
+    });
+    if vsock {
+        config["vsock"] = json!({
+            "guest_cid": GUEST_CID,
+            "uds_path": format!("/{}", jail::VSOCK),
+        });
+    }
+    config
 }
 
 #[cfg(test)]
@@ -175,7 +194,7 @@ tags = ["queue=linux"]
     fn the_vm_boots_the_initramfs_with_the_image_read_only() {
         let c = config();
         let addr = c.network.subnet.slot(1).unwrap();
-        let vm = firecracker_config(&c.pools["linux"], &addr, "console=ttyS0");
+        let vm = firecracker_config(&c.pools["linux"], &addr, "console=ttyS0", false);
         assert_eq!(vm["boot-source"]["initrd_path"], "/initrd.cpio");
         let drives: Vec<_> = vm["drives"]
             .as_array()
@@ -206,6 +225,19 @@ tags = ["queue=linux"]
             json!({ "vcpu_count": 16, "mem_size_mib": 24 * 1024, "smt": false })
         );
         assert_eq!(vm["network-interfaces"][0]["host_dev_name"], "arsonist1");
+        assert!(vm.get("vsock").is_none(), "no ssh agent, no vsock");
+    }
+
+    #[test]
+    fn the_ssh_agent_is_reached_through_a_socket_in_the_jail() {
+        let c = config();
+        let addr = c.network.subnet.slot(1).unwrap();
+        let vm = firecracker_config(&c.pools["linux"], &addr, "", true);
+        assert_eq!(
+            vm["vsock"],
+            json!({ "guest_cid": 3, "uds_path": "/v.sock" })
+        );
+        assert_eq!(jail::vsock_listener(1022), "v.sock_1022");
     }
 
     #[test]
@@ -213,7 +245,7 @@ tags = ["queue=linux"]
         let mut c = config();
         c.pools["linux"].io_engine = IoEngine::Async;
         let addr = c.network.subnet.slot(0).unwrap();
-        let vm = firecracker_config(&c.pools["linux"], &addr, "");
+        let vm = firecracker_config(&c.pools["linux"], &addr, "", false);
         assert!(vm["drives"][1].get("discard").is_none());
         assert_eq!(vm["drives"][1]["io_engine"], "Async");
     }

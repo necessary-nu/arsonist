@@ -11,12 +11,14 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -25,13 +27,16 @@ use nix::mount::{MsFlags, mount};
 use nix::sys::reboot::{RebootMode, reboot, set_cad_enabled};
 use nix::sys::resource::{Resource, setrlimit};
 use nix::sys::signal::{Signal, kill};
+use nix::sys::socket::{
+    AddressFamily, Shutdown, SockFlag, SockType, VsockAddr, connect, shutdown, socket,
+};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, chdir, chroot, sethostname, sync};
 
 use crate::images::DEFAULT_PATH;
 use crate::protocol::{
-    CACHE_LABEL, GuestConfig, INITRAMFS_CONFIG, INITRAMFS_DIR, SCRATCH_LABEL, VM_INFO_PATH,
-    cache_subdir,
+    CACHE_LABEL, GuestConfig, INITRAMFS_CONFIG, INITRAMFS_DIR, SCRATCH_LABEL, SSH_AGENT_PORT,
+    SSH_AUTH_SOCK, VM_INFO_PATH, cache_subdir,
 };
 use crate::signals::{self, Signals};
 use crate::{error, info, log, warn};
@@ -344,6 +349,54 @@ fn bind_files(config: &GuestConfig) -> Result<()> {
     Ok(())
 }
 
+/// Listen at [`SSH_AUTH_SOCK`] and carry each connection to the host's
+/// agent over vsock. Init's threads outlive the agent's processes, which
+/// the wind-down kills, and end with the VM.
+fn bridge_ssh_agent() -> Result<()> {
+    let listener = UnixListener::bind(SSH_AUTH_SOCK)
+        .with_context(|| format!("listening at {SSH_AUTH_SOCK}"))?;
+    thread::spawn(move || {
+        for client in listener.incoming() {
+            match client {
+                Ok(client) => {
+                    thread::spawn(move || {
+                        if let Err(e) = carry_to_host(client) {
+                            warn!("ssh agent: {e:#}");
+                        }
+                    });
+                }
+                Err(e) => warn!("ssh agent: {e}"),
+            }
+        }
+    });
+    Ok(())
+}
+
+fn carry_to_host(client: UnixStream) -> Result<()> {
+    let host = socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    connect(
+        host.as_raw_fd(),
+        &VsockAddr::new(libc::VMADDR_CID_HOST, SSH_AGENT_PORT),
+    )
+    .context("connecting to the host's ssh agent")?;
+    let host = File::from(host);
+    let (mut from_client, mut to_client) = (client.try_clone()?, client);
+    let (mut from_host, mut to_host) = (host.try_clone()?, host);
+    let upstream = thread::spawn(move || {
+        let _ = io::copy(&mut from_client, &mut to_host);
+        let _ = shutdown(to_host.as_raw_fd(), Shutdown::Write);
+    });
+    let _ = io::copy(&mut from_host, &mut to_client);
+    let _ = to_client.shutdown(std::net::Shutdown::Write);
+    let _ = upstream.join();
+    Ok(())
+}
+
 /// Docker's defaults for a container's environment, then the image's, the
 /// pool's and the agent's, each overriding the ones before.
 fn environment(config: &GuestConfig) -> HashMap<String, String> {
@@ -539,6 +592,9 @@ fn run() -> Result<()> {
     // for some builds.
     if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, 1 << 20, 1 << 20) {
         warn!("could not raise the open file limit: {e}");
+    }
+    if config.ssh_agent {
+        bridge_ssh_agent()?;
     }
 
     let env = environment(&config);

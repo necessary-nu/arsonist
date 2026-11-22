@@ -3,18 +3,23 @@
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use bao_ssh_agent::{Agent, Background, KeyStore, Serving, Transit};
 use nix::sys::signal::Signal;
 
 use crate::cmd::Cmd;
-use crate::config::{Config, IoEngine, Slot};
+use crate::config::{Config, IoEngine, Slot, SshAgent};
 use crate::images::{self, KERNEL_FILE, ROOTFS_FILE, Version};
 use crate::net::{self, SlotAddress};
-use crate::protocol::{CACHE_LABEL, GuestConfig, SCRATCH_LABEL, VmInfo};
+use crate::protocol::{
+    CACHE_LABEL, GuestConfig, SCRATCH_LABEL, SSH_AGENT_PORT, SSH_AUTH_SOCK, VmInfo,
+};
 use crate::signals::{self, Signals};
 use crate::vm::{self, jail};
 use crate::{elf, error, firecracker, info, initramfs, warn};
@@ -160,6 +165,8 @@ struct Boot {
     addr: SlotAddress,
     jail: JailPaths,
     args: Vec<String>,
+    /// Answering until the boot is over.
+    ssh_agent: Option<Serving>,
 }
 
 fn guest_config(
@@ -182,6 +189,9 @@ fn guest_config(
     env.push(("BUILDKITE_AGENT_TOKEN".into(), token.into()));
     env.push(("BUILDKITE_AGENT_NAME".into(), hostname.into()));
     env.push(("BUILDKITE_AGENT_TAGS".into(), pool.tags.join(",")));
+    if config.ssh_agent.is_some() {
+        env.push(("SSH_AUTH_SOCK".into(), SSH_AUTH_SOCK.into()));
+    }
 
     let mut agent: Vec<String> = ["buildkite-agent", "start", "--disconnect-after-job"]
         .map(String::from)
@@ -201,6 +211,7 @@ fn guest_config(
         cache_paths: config.cache.paths.clone(),
         files: config.files.iter().map(|f| f.guest.clone()).collect(),
         discard: pool.io_engine == IoEngine::Sync,
+        ssh_agent: config.ssh_agent.is_some(),
         info: VmInfo {
             slot: slot.name.clone(),
             host: host_name(),
@@ -217,6 +228,7 @@ fn prepare_boot(
     kernel: &Version,
     image: &Version,
     init: &[u8],
+    ssh_agent: Option<(&Background, Agent)>,
 ) -> Result<Boot> {
     let pool = config.pool(slot);
     let uid = config.slot_uid(slot);
@@ -259,11 +271,23 @@ fn prepare_boot(
     fs::set_permissions(&initrd, fs::Permissions::from_mode(0o400))?;
 
     let boot_args = vm::boot_args(&addr, &hostname, &guest.dns, &config.kernel.args);
-    let vm_config = vm::firecracker_config(pool, &addr, &boot_args);
+    let vm_config = vm::firecracker_config(pool, &addr, &boot_args, ssh_agent.is_some());
     fs::write(
         in_jail(jail::VM_CONFIG),
         serde_json::to_vec_pretty(&vm_config)?,
     )?;
+
+    let ssh_agent = ssh_agent
+        .map(|(background, agent)| {
+            let path = in_jail(&jail::vsock_listener(SSH_AGENT_PORT));
+            let listener = UnixListener::bind(&path)
+                .with_context(|| format!("listening at {}", path.display()))?;
+            // Firecracker connects to it as the slot's uid.
+            chown(&path, Some(uid), Some(uid))?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            background.serve(listener, agent)
+        })
+        .transpose()?;
 
     net::tap_up(&addr, uid)?;
 
@@ -296,7 +320,12 @@ fn prepare_boot(
         "booting {} as {hostname}: {}, kernel {}",
         slot.name, image.meta.image, kernel.meta.image
     );
-    Ok(Boot { addr, jail, args })
+    Ok(Boot {
+        addr,
+        jail,
+        args,
+        ssh_agent,
+    })
 }
 
 /// Whether the arsonist binary this runs from was replaced on disk.
@@ -336,6 +365,10 @@ pub fn run(config_path: &Path, slot_name: &str) -> Result<()> {
     let mut stopping = false;
     let mut backoff = BACKOFF_MIN;
     let mut unconfigured_logged = false;
+    // Kept from boot to boot, with its OpenBao login, while the config
+    // asks for the same key.
+    let mut transit: Option<(SshAgent, Arc<Transit>)> = None;
+    let mut background: Option<Background> = None;
     loop {
         if stopping {
             break;
@@ -365,7 +398,22 @@ pub fn run(config_path: &Path, slot_name: &str) -> Result<()> {
         else {
             break;
         };
-        let boot = match prepare_boot(&config, &slot, &kernel, &image, &init) {
+        transit = match (&config.ssh_agent, transit.take()) {
+            (Some(wanted), Some((had, kept))) if had == *wanted => Some((had, kept)),
+            (Some(wanted), _) => Some((wanted.clone(), Arc::new(wanted.transit()?))),
+            (None, _) => None,
+        };
+        if transit.is_some() && background.is_none() {
+            background = Some(Background::new().context("starting the ssh agent")?);
+        }
+        let ssh_agent = transit
+            .as_ref()
+            .zip(background.as_ref())
+            .map(|((_, transit), bg)| {
+                let store: Arc<dyn KeyStore> = transit.clone();
+                (bg, Agent::new(store, &slot.name))
+            });
+        let mut boot = match prepare_boot(&config, &slot, &kernel, &image, &init, ssh_agent) {
             Ok(boot) => boot,
             Err(e) => {
                 error!(
@@ -393,6 +441,7 @@ pub fn run(config_path: &Path, slot_name: &str) -> Result<()> {
                 .with_context(|| format!("starting {}", config.firecracker.jailer.display()))?;
             Some(supervise(child, &boot, &signals, &mut stopping, slot_name)?)
         };
+        drop(boot.ssh_agent.take());
         let _ = fs::remove_dir_all(&boot.jail.id_dir);
         if let Err(e) = net::tap_down(&boot.addr) {
             warn!("{slot_name}: {e:#}");

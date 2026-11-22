@@ -73,6 +73,19 @@ guest = "/buildkite-secrets"
 # host = "/etc/arsonist/docker-config.json"
 # guest = "/root/.docker/config.json"
 
+# An ssh agent for every guest, at SSH_AUTH_SOCK, offering one Ed25519 key
+# that lives in OpenBao's transit engine. The host signs with it for the
+# guest, so no VM holds the key or any way into OpenBao. Register the key
+# with the git host as `arsonist ssh-agent public-key` prints it. The AppRole
+# needs `read` on transit/keys/<key> and `update` on transit/sign/<key>.
+# [ssh_agent]
+# openbao = "https://vault.example"
+# key = "buildkite-ssh"
+# transit_mount = "transit"
+# approle_mount = "approle"
+# {"role_id": "…", "secret_id": "…"}, mode 600:
+# approle_file = "/etc/arsonist/openbao-approle.json"
+
 # One table per kind of agent. Slots are <pool>-1 .. <pool>-<count>. Add new
 # pools at the end: inserting one renumbers the slots after it.
 #

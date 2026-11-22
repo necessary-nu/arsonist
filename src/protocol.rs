@@ -19,6 +19,11 @@ pub const CACHE_LABEL: &str = "arsonist-cache";
 /// Where the guest leaves [`VmInfo`] for jobs to read.
 pub const VM_INFO_PATH: &str = "/run/arsonist/vm.json";
 
+/// The ssh agent's socket in the guest, which init bridges to the host's
+/// agent on vsock port [`SSH_AGENT_PORT`].
+pub const SSH_AUTH_SOCK: &str = "/run/arsonist/ssh-agent.sock";
+pub const SSH_AGENT_PORT: u32 = 1022;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuestConfig {
     pub hostname: String,
@@ -33,6 +38,8 @@ pub struct GuestConfig {
     pub files: Vec<String>,
     /// Mount the scratch and cache disks with `discard`.
     pub discard: bool,
+    /// The host answers as an ssh agent on vsock port [`SSH_AGENT_PORT`].
+    pub ssh_agent: bool,
     pub info: VmInfo,
 }
 
