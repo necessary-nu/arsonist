@@ -3,6 +3,7 @@ name = "bao-ssh-agent"
 version = "0.1.0"
 edition = "2024"
 description = "An ssh agent whose one key stays in OpenBao's transit engine"
+license = "EUPL-1.2"
 publish = false
 
 [dependencies]

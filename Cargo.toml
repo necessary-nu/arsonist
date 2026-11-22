@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Buildkite agents in single-use Firecracker microVMs, booted from OCI images"
 repository = "https://github.com/necessary-nu/arsonist"
+license = "EUPL-1.2"
 publish = false
 
 [dependencies]

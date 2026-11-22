@@ -63,3 +63,7 @@ stops listening when dropped. arsonist does that for each VM it boots.
 `scripts/e2e.sh` runs it against OpenBao's dev server and logs in to sshd
 through it, before and after OpenBao revokes the agent's token. It needs
 Docker.
+
+## Licence
+
+EUPL-1.2. See [LICENSE](../../LICENSE).

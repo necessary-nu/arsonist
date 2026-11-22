@@ -59,8 +59,11 @@ the VM. Firecracker exits and the slot boots the next VM.
 **The kernel** is Amazon Linux's `microvm-kernel-*` tree built with
 Firecracker's own guest config for that series, which is the combination
 Firecracker validates, plus [`kernel/arsonist.config`](kernel/arsonist.config).
-CI publishes it as `ghcr.io/necessary-nu/arsonist-kernel:latest`, a private
-package, and hosts pull it like any image.
+CI publishes it as `ghcr.io/necessary-nu/arsonist-kernel:latest`, a public
+package, and hosts pull it like any image. Its source is the Amazon Linux
+tag `KERNEL_TAG` in [`kernel/Dockerfile`](kernel/Dockerfile) names, configured
+as that file says; the image carries the resulting `/config` beside
+`/vmlinux`.
 
 **Networking**: slot _n_ gets a tap `arsonist<n>` and the _n_th /30 of
 `network.subnet`. The kernel configures the guest from `ip=`, so the guest
@@ -104,9 +107,8 @@ To hold a pool on a known-good image, pin its digest:
 Requirements: x86_64 with `/dev/kvm`, systemd with cgroup v2, and apt for
 the automatic package install (Ubuntu 24.04 is what this targets).
 
-The repository and the kernel package are private. Each host needs a
-GitHub token that can read packages (`read:packages`) in both necessary-nu,
-for the kernel, and the organisations whose images the pools boot.
+Hosts need registry credentials only for private images their pools boot,
+saved with `arsonist auth login`; the kernel needs none.
 
 ```sh
 gh release download --repo necessary-nu/arsonist --pattern arsonist-x86_64-linux
@@ -114,7 +116,7 @@ sudo install -m 755 arsonist-x86_64-linux /usr/local/bin/arsonist
 sudo arsonist setup          # e2fsprogs, erofs-utils, iproute2, nftables; pinned Firecracker; example config
 sudoedit /etc/arsonist/config.toml
 echo -n "$BUILDKITE_AGENT_TOKEN" | sudo install -m 600 /dev/stdin /etc/arsonist/agent-token
-echo -n "$GHCR_TOKEN" | sudo arsonist auth login ghcr.io -u <github user>
+echo -n "$GHCR_TOKEN" | sudo arsonist auth login ghcr.io -u <github user>   # private images only
 sudo arsonist install        # systemd units, one arsonist@<slot> per slot
 sudo arsonist status
 ```
@@ -185,3 +187,7 @@ agent's token.
 
 The binary must be static: the initramfs holds nothing else, so the guest
 has no libc to load. `arsonist slot run` refuses a dynamically linked build.
+
+## Licence
+
+EUPL-1.2. See [LICENSE](LICENSE).
